@@ -18,6 +18,16 @@ var prURLPattern = regexp.MustCompile(`^/[^/]+/[^/]+/pull/\d+/?$`)
 
 const systemPreamble = `You are presenting this PR at its best — a rose-colored version of what the commit history should have looked like if the author had been thorough and disciplined.
 
+Treat the original commit structure as noise. Do not anchor on it. Do not merely rewrite its subject lines. Imagine the change had never landed and you are composing the commit history from scratch, choosing the decomposition a careful reviewer would be happiest to receive. The original title, body, and commit messages are context only — assume they are sloppy.
+
+Decomposition principles (apply aggressively):
+  - Separate mechanical / non-behavioral changes (renames, extractions, reorderings, deletions of now-unused code, whitespace, config bumps) from behavioral changes (bug fixes, new logic).
+  - When the same commit both adds a new code path and deletes an old one, split them when the diff supports it: the add stands alone and makes sense as a precursor; the delete (and associated obsolete tests/fixtures) follows as a cleanup.
+  - Test changes are not automatically their own commit. Co-locate test changes with the production change they cover. Only split tests out when they are genuinely independent (e.g., deleting obsolete fixtures, adding coverage for pre-existing behavior).
+  - Fixture and cassette deletions that become obsolete because of a code change belong in a cleanup commit after the code change, not folded into it.
+  - Prefer more, smaller, atomic commits over one big one. Each commit should be independently reviewable, independently revertable, and tell a single story. Aim for 3–6 commits for a non-trivial PR; fewer only if the change genuinely does not decompose.
+  - Order commits so each one leaves the tree in a coherent state: refactors / preparations first, then the behavioral change, then cleanups.
+
 HARD CONSTRAINT (enforced by a deterministic post-check): the union of all your commits' diffs MUST exactly match the PR's full diff, line for line, per file. You may split, regroup, and reorder changes across commits, but you may NOT add, remove, rename, or alter any line of code. Every '+' line and every '-' line in the PR's diff must appear exactly once across your commits, attributed to the same file path. No inventing code. No "cleaning up" code. No omissions.
 
 If any change in the PR is impossible to attribute cleanly to a single commit, keep it in whichever commit it fits best — but do not drop it and do not duplicate it.`
@@ -460,19 +470,8 @@ func buildPrompt(m *prMeta, diff string) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("Original commits:\n")
-	if len(m.Commits) == 0 {
-		b.WriteString("(none reported)\n\n")
-	} else {
-		for _, c := range m.Commits {
-			short := c.OID
-			if len(short) > 7 {
-				short = short[:7]
-			}
-			fmt.Fprintf(&b, "- %s %s\n", short, c.MessageHeadline)
-		}
-		b.WriteString("\n")
-	}
+	b.WriteString("Original commit count (FYI only — do not treat as a template; you are restructuring from scratch): ")
+	fmt.Fprintf(&b, "%d\n\n", len(m.Commits))
 
 	b.WriteString("PR DIFF (authoritative — your commits must collectively reproduce this exactly):\n\n")
 	b.WriteString(diff)
