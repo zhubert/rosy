@@ -148,14 +148,16 @@ func run(args []string) error {
 		return errors.New("`claude` not found on PATH — install Claude Code")
 	}
 
-	statusOpeningPR()
+	t := startOpeningPR()
 	meta, err := fetchMeta(pr)
+	t.end()
 	if err != nil {
 		return fmt.Errorf("fetching PR metadata: %w", err)
 	}
-	statusReadingDiff(meta.ChangedFiles, meta.Additions, meta.Deletions)
 
+	t = startReadingDiff(meta.ChangedFiles, meta.Additions, meta.Deletions)
 	diff, err := fetchDiff(pr)
+	t.end()
 	if err != nil {
 		return fmt.Errorf("fetching PR diff: %w", err)
 	}
@@ -165,14 +167,17 @@ func run(args []string) error {
 
 	prompt := buildPrompt(meta, diff)
 
-	statusGhostWriting(model)
+	t = startGhostWriting(model)
 	resp, err := runClaude(prompt, model)
+	t.end()
 	if err != nil {
 		return fmt.Errorf("running claude: %w", err)
 	}
 
-	statusVerifying()
-	if violations := verifyDiffParity(diff, resp); len(violations) > 0 {
+	t = startVerifying()
+	violations := verifyDiffParity(diff, resp)
+	t.end()
+	if len(violations) > 0 {
 		statusParityFail(countLineDivergences(diff, resp))
 	} else {
 		statusLGTM()
@@ -180,9 +185,15 @@ func run(args []string) error {
 	return runTUI(resp)
 }
 
-// status prints a progress line to stderr so stdout stays clean for piping.
-func status(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "rosy: "+format+"\n", args...)
+// status prints a progress line to stderr in the rose palette.
+func status(msg string) {
+	fmt.Fprintln(os.Stderr, styleHot.Render("rosy:")+" "+styleSubtle.Render(msg))
+}
+
+// statusWarn is like status but uses the crimson "del" tone, to visually flag
+// notes the user should read (e.g. a parity-failure ribbon).
+func statusWarn(msg string) {
+	fmt.Fprintln(os.Stderr, styleDel.Render("rosy:")+" "+styleSubtle.Render(msg))
 }
 
 func pluralS(n int) string {
