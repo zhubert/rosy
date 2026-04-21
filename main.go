@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -101,15 +100,43 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: rosy <pr-url>")
-		fmt.Fprintln(os.Stderr, "  <pr-url> is a full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123")
-		if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+	model := "sonnet"
+	var pr string
+	demo := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-h" || a == "--help":
+			printUsage()
 			return nil
+		case a == "--model":
+			if i+1 >= len(args) {
+				return errors.New("--model requires a value")
+			}
+			model = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--model="):
+			model = strings.TrimPrefix(a, "--model=")
+		case a == "--demo":
+			demo = true
+		case strings.HasPrefix(a, "-"):
+			printUsage()
+			return fmt.Errorf("unknown flag: %s", a)
+		default:
+			if pr != "" {
+				printUsage()
+				return errors.New("unexpected extra argument")
+			}
+			pr = a
 		}
+	}
+	if demo {
+		return runTUI(demoFixture)
+	}
+	if pr == "" {
+		printUsage()
 		return errors.New("missing PR URL")
 	}
-	pr := args[0]
 	if err := validatePRURL(pr); err != nil {
 		return err
 	}
@@ -121,13 +148,12 @@ func run(args []string) error {
 		return errors.New("`claude` not found on PATH — install Claude Code")
 	}
 
-	status("pulling down PR metadata")
+	statusOpeningPR()
 	meta, err := fetchMeta(pr)
 	if err != nil {
 		return fmt.Errorf("fetching PR metadata: %w", err)
 	}
-	status("pulling down PR diff (%d file%s, +%d / -%d)",
-		meta.ChangedFiles, pluralS(meta.ChangedFiles), meta.Additions, meta.Deletions)
+	statusReadingDiff(meta.ChangedFiles, meta.Additions, meta.Deletions)
 
 	diff, err := fetchDiff(pr)
 	if err != nil {
@@ -139,25 +165,19 @@ func run(args []string) error {
 
 	prompt := buildPrompt(meta, diff)
 
-	status("arranging commits (this usually takes a minute)")
-	resp, err := runClaude(prompt)
+	statusGhostWriting(model)
+	resp, err := runClaude(prompt, model)
 	if err != nil {
 		return fmt.Errorf("running claude: %w", err)
 	}
 
-	status("verifying diff parity")
+	statusVerifying()
 	if violations := verifyDiffParity(diff, resp); len(violations) > 0 {
-		fmt.Fprintln(os.Stderr, "rosy: output rejected — generated commits do not reproduce the PR's diff exactly.")
-		fmt.Fprintln(os.Stderr, "A rosy output must preserve every line of the original change. Violations:")
-		for _, v := range violations {
-			fmt.Fprintf(os.Stderr, "  - %s\n", v)
-		}
-		return errors.New("refusing to print output: generated diff does not match PR diff")
+		statusParityFail(countLineDivergences(diff, resp))
+	} else {
+		statusLGTM()
 	}
-
-	status("done")
-	_, err = io.Copy(os.Stdout, strings.NewReader(resp))
-	return err
+	return runTUI(resp)
 }
 
 // status prints a progress line to stderr so stdout stays clean for piping.
@@ -303,6 +323,32 @@ func verifyDiffParity(prDiff, generated string) []string {
 
 	sort.Strings(violations)
 	return violations
+}
+
+// countLineDivergences counts the total number of +/- lines that don't
+// reconcile between the PR's diff and the generated output, across every
+// file. Used for a human-readable "N lines drifted" status message; it is
+// not used to gate output.
+func countLineDivergences(prDiff, generated string) int {
+	want := parseDiffFiles(prDiff)
+	got := parseDiffFiles(generated)
+	total := 0
+	for path, w := range want {
+		g, ok := got[path]
+		if !ok {
+			total += len(w.added) + len(w.removed)
+			continue
+		}
+		e1, m1 := multisetSymmetricDiff(w.added, g.added)
+		e2, m2 := multisetSymmetricDiff(w.removed, g.removed)
+		total += len(e1) + len(m1) + len(e2) + len(m2)
+	}
+	for path, g := range got {
+		if _, ok := want[path]; !ok {
+			total += len(g.added) + len(g.removed)
+		}
+	}
+	return total
 }
 
 func describeMultisetDiff(kind, path string, want, got []string) string {
@@ -482,8 +528,18 @@ func buildPrompt(m *prMeta, diff string) string {
 	return b.String()
 }
 
-func runClaude(prompt string) (string, error) {
-	cmd := exec.Command("claude", "-p")
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "usage: rosy [--model <name>] <pr-url>")
+	fmt.Fprintln(os.Stderr, "  <pr-url>        full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123")
+	fmt.Fprintln(os.Stderr, "  --model <name>  claude model to use (default: sonnet; e.g. sonnet, opus, haiku)")
+}
+
+func runClaude(prompt, model string) (string, error) {
+	args := []string{"-p"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	cmd := exec.Command("claude", args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

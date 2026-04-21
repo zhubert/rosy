@@ -217,6 +217,74 @@ func keys(m map[string]*fileDiff) []string {
 	return out
 }
 
+func TestParseCommits_SplitsMultipleCommitsWithMessagesAndFiles(t *testing.T) {
+	gen := `commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Author: Dev <dev@example.com>
+Date:   Mon Apr 21 10:00:00 2026 +0000
+
+    rename Old to New and add Extra
+
+    body line one
+    body line two
+
+diff --git a/foo.go b/foo.go
+index 1111111..2222222 100644
+--- a/foo.go
++++ b/foo.go
+@@ -1,5 +1,6 @@
+ package foo
+
+-func Old() {}
++func New() {}
++func Extra() {}
+
+ var X = 1
+
+commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+Author: Dev <dev@example.com>
+Date:   Mon Apr 21 10:05:00 2026 +0000
+
+    bump N
+
+diff --git a/bar.go b/bar.go
+index 3333333..4444444 100644
+--- a/bar.go
++++ b/bar.go
+@@ -10,3 +10,3 @@ package bar
+
+-const N = 1
++const N = 2
+`
+	commits := parseCommits(gen)
+	if len(commits) != 2 {
+		t.Fatalf("expected 2 commits, got %d", len(commits))
+	}
+	if commits[0].SHA != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Errorf("bad sha[0]: %q", commits[0].SHA)
+	}
+	if commits[0].Subject != "rename Old to New and add Extra" {
+		t.Errorf("bad subject[0]: %q", commits[0].Subject)
+	}
+	if !strings.Contains(commits[0].Body, "body line one") || !strings.Contains(commits[0].Body, "body line two") {
+		t.Errorf("bad body[0]: %q", commits[0].Body)
+	}
+	if len(commits[0].Files) != 1 || commits[0].Files[0].Path != "foo.go" {
+		t.Fatalf("bad files[0]: %+v", commits[0].Files)
+	}
+	if commits[0].Files[0].Adds != 2 || commits[0].Files[0].Dels != 1 {
+		t.Errorf("bad adds/dels for foo.go: +%d -%d", commits[0].Files[0].Adds, commits[0].Files[0].Dels)
+	}
+	if !strings.Contains(commits[0].Files[0].Diff, "diff --git a/foo.go b/foo.go") {
+		t.Errorf("file diff missing header: %q", commits[0].Files[0].Diff)
+	}
+	if commits[1].Subject != "bump N" {
+		t.Errorf("bad subject[1]: %q", commits[1].Subject)
+	}
+	if len(commits[1].Files) != 1 || commits[1].Files[0].Path != "bar.go" {
+		t.Fatalf("bad files[1]: %+v", commits[1].Files)
+	}
+}
+
 func TestValidatePRURL(t *testing.T) {
 	good := []string{
 		"https://github.com/owner/repo/pull/1",
