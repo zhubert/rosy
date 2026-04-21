@@ -8,7 +8,7 @@ import (
 )
 
 // spinnerFrames is the braille dot-cycle used for the status-line spinner.
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+var spinnerFrames = []string{"✦", "✧", "✶", "✸", "✹", "❋", "✿", "❀", "✾", "❁"}
 
 // stepTimer animates a single status line with a spinner and a live elapsed
 // counter. It prints to stderr and stays on one line (using \r and
@@ -84,7 +84,7 @@ func (t *stepTimer) end() {
 	close(t.done)
 	t.wg.Wait()
 	elapsed := formatElapsed(time.Since(t.start))
-	line := styleHot.Render("✓") + " " +
+	line := styleHot.Render("❁") + " " +
 		styleHot.Render("rosy:") + " " +
 		styleSubtle.Render(t.currentMsg()) + " " +
 		styleMuted.Render("..."+elapsed)
