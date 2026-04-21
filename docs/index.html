@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rosy — the commit history you wish you'd written</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #120810;
+    --bg-term: #1a0c12;
+    --bg-panel: #241018;
+    --bg-sel: #4a1e2a;
+    --text: #e8c4cc;
+    --light: #ffe4ec;
+    --muted: #8b5a68;
+    --subtle: #c47b8a;
+    --accent: #ff80ab;
+    --hot: #ff5c8a;
+    --deep: #c2185b;
+    --border: #6b2e3f;
+    --crimson: #ad1457;
+    --add: #f48fb1;
+    --ctx: #9a7a85;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  /* terminal window chrome */
+  .term {
+    background: var(--bg-term);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 20px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(255,92,138,.06);
+    overflow: hidden;
+  }
+  .term-bar {
+    background: linear-gradient(var(--bg-panel), #1c0c14);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  .term-bar .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .term-bar .dot.r { background: var(--crimson); }
+  .term-bar .dot.y { background: #d48a56; }
+  .term-bar .dot.g { background: #8fb373; }
+  .term-bar .title {
+    flex: 1; text-align: center;
+    font-size: 11px; color: var(--muted); letter-spacing: .05em;
+  }
+  .term-body { padding: 32px 40px; }
+
+  .brand {
+    font-size: 88px;
+    line-height: 1;
+    margin: 8px 0 0;
+    font-weight: 700;
+    color: var(--light);
+    letter-spacing: -0.03em;
+  }
+  .brand .caret { color: var(--hot); font-weight: 400; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .tagline {
+    font-style: italic;
+    color: var(--subtle);
+    margin: 16px 0 0;
+    font-size: 18px;
+  }
+  .epigraph {
+    border-left: 2px solid var(--deep);
+    padding: 2px 0 2px 20px;
+    margin: 40px 0;
+    color: var(--subtle);
+    font-style: italic;
+  }
+  .epigraph em { color: var(--accent); font-style: normal; font-weight: 500; }
+
+  h2 {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: .2em;
+    margin: 56px 0 14px;
+  }
+  h2::before { content: "# "; color: var(--muted); font-weight: 400; }
+  p { margin: 0 0 16px; }
+  p em { color: var(--light); font-style: italic; }
+  code { color: var(--light); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--deep); }
+  a:hover { color: var(--light); border-color: var(--hot); }
+
+  .sh { margin: 12px 0; white-space: pre-wrap; }
+  .sh .prompt { color: var(--hot); user-select: none; }
+  .sh .cmd { color: var(--light); }
+  .sh .out { display: block; color: var(--muted); padding-left: 20px; }
+
+  /* ---- TUI mock ---- */
+  .tui-figure { margin: 24px 0 8px; }
+  .tui {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--text);
+  }
+  .tui-body {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+    min-height: 320px;
+  }
+  .tui-col-left {
+    flex: 0 0 260px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .tui-col-left .pane { flex: 1; min-height: 120px; }
+  .pane {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .pane.focused { border-color: var(--hot); }
+  .pane-title {
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .pane.unfocused .pane-title { color: var(--muted); }
+  .pane-title .diff-path { color: var(--text); font-weight: 400; margin-left: 10px; }
+  .pane.unfocused .pane-title .diff-path { color: var(--muted); }
+  .pane-rows { display: flex; flex-direction: column; gap: 1px; }
+  .row {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    min-width: 0;
+    padding: 1px 2px;
+    border-radius: 2px;
+    color: var(--text);
+  }
+  .row-sel { background: var(--bg-sel); color: var(--light); font-weight: 700; }
+  .row .cursor { color: var(--hot); flex: 0 0 10px; }
+  .row:not(.row-sel) .cursor { color: transparent; }
+  .row-sel .cursor { color: var(--light); }
+  .row .sha { color: var(--subtle); flex: 0 0 auto; }
+  .row-sel .sha { color: var(--light); }
+  .row .subj, .row .path {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .stats { color: var(--subtle); flex: 0 0 auto; }
+  .row-sel .stats { color: var(--light); }
+  .pane-diff { flex: 1; min-width: 0; }
+  .pane-diff pre { margin: 0; white-space: pre; overflow-x: auto; font-size: 11px; line-height: 1.55; }
+  .d-subj { color: var(--hot); font-weight: 700; }
+  .d-body { color: var(--subtle); }
+  .d-div { color: var(--muted); }
+  .d-file { color: var(--accent); font-weight: 700; }
+  .d-meta { color: var(--muted); }
+  .d-hunk { color: var(--deep); font-weight: 700; }
+  .d-add { color: var(--add); }
+  .d-del { color: var(--crimson); }
+  .d-ctx { color: var(--ctx); }
+  .tui-status { font-size: 10px; color: var(--muted); padding: 10px 4px 2px; }
+  .tui-status .brand { color: var(--hot); font-weight: 700; font-size: 11px; }
+  .tui-status .focus { color: var(--subtle); }
+
+  footer {
+    text-align: center;
+    margin: 72px auto 0;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+  }
+  footer a { color: var(--subtle); border: 0; }
+  footer a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="term">
+    <div class="term-bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">~/Code/rosy — zsh — 140×40</span>
+    </div>
+    <div class="term-body">
+      <h1 class="brand">rosy<span class="caret">_</span></h1>
+      <p class="tagline">the commit history you wish you'd written</p>
+
+      <blockquote class="epigraph">
+        History is written by the victors. <em>rosy</em> is written by
+        the author, after the fact, with more time and better vibes.
+      </blockquote>
+
+      <p>
+        <code>rosy</code> opens a GitHub PR and redrafts its commit
+        history — not what happened, but what <em>should</em> have
+        happened, if you'd been composing the log for a future reader
+        instead of for yourself at 11pm.
+      </p>
+      <p>
+        The output is a TUI in a rose palette, not a git rewrite. Your
+        actual history remains exactly as ashamed as you left it.
+      </p>
+
+      <h2>Install</h2>
+      <div class="sh"><span class="prompt">$ </span><span class="cmd">brew install zhubert/tap/rosy</span></div>
+      <div class="sh"><span class="prompt">$ </span><span class="cmd">go install github.com/zhubert/rosy@latest</span></div>
+
+      <h2>Usage</h2>
+      <div class="sh"><span class="prompt">$ </span><span class="cmd">rosy https://github.com/owner/repo/pull/123</span>
+<span class="out">rosy: <span style="color:var(--subtle)">opening the PR</span> <span style="color:var(--muted)">...0.8s</span>
+rosy: <span style="color:var(--subtle)">sizing up the diff (4 files, +50 / -462)</span> <span style="color:var(--muted)">...1.2s</span>
+rosy: <span style="color:var(--subtle)">ghost-writing better commits via sonnet</span> <span style="color:var(--muted)">...48.3s</span>
+rosy: <span style="color:var(--subtle)">LGTM</span></span></div>
+
+      <div class="tui-figure">
+        <div class="tui">
+          <div class="tui-body">
+            <div class="tui-col-left">
+              <div class="pane focused">
+                <div class="pane-title">Commits</div>
+                <div class="pane-rows">
+                  <div class="row row-sel"><span class="cursor">▸</span><span class="sha">1a2b3c4</span><span class="subj">Cache widget lookups in WidgetStore</span></div>
+                  <div class="row"><span class="cursor">▸</span><span class="sha">2b3c4d5</span><span class="subj">Filter archived widgets at the query layer</span></div>
+                  <div class="row"><span class="cursor">▸</span><span class="sha">3c4d5e6</span><span class="subj">Drop obsolete legacy-archived fixtures</span></div>
+                  <div class="row"><span class="cursor">▸</span><span class="sha">4d5e6f7</span><span class="subj">Rename WidgetStore.Get to Find</span></div>
+                </div>
+              </div>
+              <div class="pane unfocused">
+                <div class="pane-title">Files</div>
+                <div class="pane-rows">
+                  <div class="row row-sel"><span class="cursor">▸</span><span class="path">pkg/widget/store.go</span><span class="stats">+8 -0</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="pane pane-diff unfocused">
+              <div class="pane-title">Diff<span class="diff-path">pkg/widget/store.go</span></div>
+<pre><span class="d-subj">Cache widget lookups in WidgetStore</span>
+
+<span class="d-body">Get was hitting the backing database on every call, even for
+the same id within a single request. Add a per-instance cache
+keyed by id so repeated lookups in the same handler are free
+after the first one.</span>
+
+<span class="d-div">──────────────────────────────────────────────────</span>
+
+<span class="d-file">diff --git a/pkg/widget/store.go b/pkg/widget/store.go</span>
+<span class="d-meta">index 1111111..2222222 100644
+--- a/pkg/widget/store.go
++++ b/pkg/widget/store.go</span>
+<span class="d-hunk">@@ -10,8 +10,15 @@ package widget</span>
+<span class="d-ctx"> type Store struct {
+ 	db *sql.DB</span>
+<span class="d-add">+	cache map[string]*Widget</span>
+<span class="d-ctx"> }</span>
+
+<span class="d-add">+func NewStore(db *sql.DB) *Store {
++	return &Store{db: db, cache: map[string]*Widget{}}
++}</span>
+<span class="d-ctx"> </span>
+<span class="d-ctx"> func (s *Store) Get(id string) (*Widget, error) {</span>
+<span class="d-add">+	if w, ok := s.cache[id]; ok {
++		return w, nil
++	}</span>
+</pre>
+            </div>
+          </div>
+          <div class="tui-status">
+            <span class="brand">rosy</span> · focus <span class="focus">commits</span> · tab cycle · ↑↓/jk select · q quit
+          </div>
+        </div>
+      </div>
+
+      <h2>On the occasional embellishment</h2>
+      <p>
+        The reconstruction is line-for-line faithful by contract: every
+        added line in the PR must appear exactly once across the
+        fabricated commits. A deterministic post-check enforces this.
+      </p>
+      <p>
+        When the muse drifts, <code>rosy</code> flags the divergence in
+        crimson and opens the TUI anyway. This is a fun project, not a
+        court record. Trust the diffs; treat the prose as a suggestion.
+      </p>
+
+      <footer>
+        <a href="https://github.com/zhubert/rosy">github.com/zhubert/rosy</a>
+        &nbsp;·&nbsp; MIT
+      </footer>
+    </div>
+  </div>
+</div>
+</body>
+</html>
