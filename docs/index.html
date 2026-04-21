@@ -109,83 +109,8 @@
   .sh .cmd { color: var(--light); }
   .sh .out { display: block; color: var(--muted); padding-left: 20px; }
 
-  /* ---- TUI mock ---- */
+  /* ---- screenshot ---- */
   .tui-figure { margin: 24px 0 8px; }
-  .tui {
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px;
-    font-size: 11px;
-    line-height: 1.55;
-    color: var(--text);
-  }
-  .tui-body {
-    display: flex;
-    gap: 8px;
-    align-items: stretch;
-    min-height: 320px;
-  }
-  .tui-col-left {
-    flex: 0 0 260px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-  }
-  .tui-col-left .pane { flex: 1; min-height: 120px; }
-  .pane {
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 8px 10px;
-    min-width: 0;
-    overflow: hidden;
-  }
-  .pane.focused { border-color: var(--hot); }
-  .pane-title {
-    font-weight: 700;
-    color: var(--accent);
-    margin-bottom: 6px;
-  }
-  .pane.unfocused .pane-title { color: var(--muted); }
-  .pane-title .diff-path { color: var(--text); font-weight: 400; margin-left: 10px; }
-  .pane.unfocused .pane-title .diff-path { color: var(--muted); }
-  .pane-rows { display: flex; flex-direction: column; gap: 1px; }
-  .row {
-    display: flex;
-    gap: 6px;
-    align-items: baseline;
-    min-width: 0;
-    padding: 1px 2px;
-    border-radius: 2px;
-    color: var(--text);
-  }
-  .row-sel { background: var(--bg-sel); color: var(--light); font-weight: 700; }
-  .row .cursor { color: var(--hot); flex: 0 0 10px; }
-  .row:not(.row-sel) .cursor { color: transparent; }
-  .row-sel .cursor { color: var(--light); }
-  .row .sha { color: var(--subtle); flex: 0 0 auto; }
-  .row-sel .sha { color: var(--light); }
-  .row .subj, .row .path {
-    flex: 1; min-width: 0;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .row .stats { color: var(--subtle); flex: 0 0 auto; }
-  .row-sel .stats { color: var(--light); }
-  .pane-diff { flex: 1; min-width: 0; }
-  .pane-diff pre { margin: 0; white-space: pre; overflow-x: auto; font-size: 11px; line-height: 1.55; }
-  .d-subj { color: var(--hot); font-weight: 700; }
-  .d-body { color: var(--subtle); }
-  .d-div { color: var(--muted); }
-  .d-file { color: var(--accent); font-weight: 700; }
-  .d-meta { color: var(--muted); }
-  .d-hunk { color: var(--deep); font-weight: 700; }
-  .d-add { color: var(--add); }
-  .d-del { color: var(--crimson); }
-  .d-ctx { color: var(--ctx); }
-  .tui-status { font-size: 10px; color: var(--muted); padding: 10px 4px 2px; }
-  .tui-status .brand { color: var(--hot); font-weight: 700; font-size: 11px; }
-  .tui-status .focus { color: var(--subtle); }
 
   footer {
     text-align: center;
@@ -203,8 +128,6 @@
     .term-body { padding: 20px 18px; }
     .brand { font-size: 52px; }
     .tagline { font-size: 15px; }
-    .tui-figure { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .tui { min-width: 640px; }
     .sh { font-size: 12px; }
   }
 </style>
@@ -246,61 +169,7 @@ rosy: <span style="color:var(--subtle)">ghost-writing better commits via sonnet<
 rosy: <span style="color:var(--subtle)">LGTM</span></span></div>
 
       <div class="tui-figure">
-        <div class="tui">
-          <div class="tui-body">
-            <div class="tui-col-left">
-              <div class="pane focused">
-                <div class="pane-title">Commits</div>
-                <div class="pane-rows">
-                  <div class="row row-sel"><span class="cursor">▸</span><span class="sha">1a2b3c4</span><span class="subj">Cache widget lookups in WidgetStore</span></div>
-                  <div class="row"><span class="cursor">▸</span><span class="sha">2b3c4d5</span><span class="subj">Filter archived widgets at the query layer</span></div>
-                  <div class="row"><span class="cursor">▸</span><span class="sha">3c4d5e6</span><span class="subj">Drop obsolete legacy-archived fixtures</span></div>
-                  <div class="row"><span class="cursor">▸</span><span class="sha">4d5e6f7</span><span class="subj">Rename WidgetStore.Get to Find</span></div>
-                </div>
-              </div>
-              <div class="pane unfocused">
-                <div class="pane-title">Files</div>
-                <div class="pane-rows">
-                  <div class="row row-sel"><span class="cursor">▸</span><span class="path">pkg/widget/store.go</span><span class="stats">+8 -0</span></div>
-                </div>
-              </div>
-            </div>
-            <div class="pane pane-diff unfocused">
-              <div class="pane-title">Diff<span class="diff-path">pkg/widget/store.go</span></div>
-<pre><span class="d-subj">Cache widget lookups in WidgetStore</span>
-
-<span class="d-body">Get was hitting the backing database on every call, even for
-the same id within a single request. Add a per-instance cache
-keyed by id so repeated lookups in the same handler are free
-after the first one.</span>
-
-<span class="d-div">──────────────────────────────────────────────────</span>
-
-<span class="d-file">diff --git a/pkg/widget/store.go b/pkg/widget/store.go</span>
-<span class="d-meta">index 1111111..2222222 100644
---- a/pkg/widget/store.go
-+++ b/pkg/widget/store.go</span>
-<span class="d-hunk">@@ -10,8 +10,15 @@ package widget</span>
-<span class="d-ctx"> type Store struct {
- 	db *sql.DB</span>
-<span class="d-add">+	cache map[string]*Widget</span>
-<span class="d-ctx"> }</span>
-
-<span class="d-add">+func NewStore(db *sql.DB) *Store {
-+	return &Store{db: db, cache: map[string]*Widget{}}
-+}</span>
-<span class="d-ctx"> </span>
-<span class="d-ctx"> func (s *Store) Get(id string) (*Widget, error) {</span>
-<span class="d-add">+	if w, ok := s.cache[id]; ok {
-+		return w, nil
-+	}</span>
-</pre>
-            </div>
-          </div>
-          <div class="tui-status">
-            <span class="brand">rosy</span> · focus <span class="focus">commits</span> · tab cycle · ↑↓/jk select · q quit
-          </div>
-        </div>
+        <img src="rosy.png" alt="rosy TUI showing three panes: a commit list on the left and a syntax-highlighted diff on the right" style="width:100%;border-radius:6px;border:1px solid var(--border);display:block;">
       </div>
 
       <h2>On the occasional embellishment</h2>
