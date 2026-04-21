@@ -15,7 +15,15 @@ import (
 
 var prURLPattern = regexp.MustCompile(`^/[^/]+/[^/]+/pull/\d+/?$`)
 
-const systemPreamble = `You are presenting this PR at its best. Produce a rose-colored version of the PR — what it would look like if the author had been thorough and disciplined. Do not invent functionality that isn't in the diff. If the diff doesn't support a claim, omit it. Ground every claim in the diff, not in the original (possibly sloppy) title, body, or commit messages.`
+const systemPreamble = `You are presenting this PR at its best. Produce a rose-colored version of the PR — what it would look like if the author had been thorough and disciplined. Do not invent functionality that isn't in the diff. If the diff doesn't support a claim, omit it. Ground every claim in the diff, not in the original (possibly sloppy) title, body, or commit messages.
+
+HARD CONSTRAINT — you MUST NOT modify, rewrite, or suggest changes to the PR's code. Your output is a description of the PR as-is; it is never a proposal to alter the code. Specifically:
+  - Do NOT include diff blocks, patches, or hunk headers (no lines starting with '+ ', '- ', '@@ ', '--- ', '+++ ').
+  - Do NOT include source-code snippets in any language (no fenced blocks tagged as a programming language, e.g. ` + "```go" + `, ` + "```js" + `, ` + "```python" + `, ` + "```diff" + `, ` + "```patch" + `).
+  - Refer to code by identifier names and file paths in prose or bullets only. Never paste, quote, rewrite, or "cleaned up" versions of the code.
+  - The only fenced code blocks permitted in your output are untagged fences (three backticks with NO language tag) used to format proposed commit messages as specified below.
+
+If you are unsure whether something counts as code, omit it. A deterministic post-check will reject output that violates these rules.`
 
 const outputSpec = `Produce markdown with these exact section headers (in this order):
 
@@ -37,13 +45,15 @@ Bulleted walkthrough of what actually changed.
 
 ## Proposed commit structure
 
-How the commits should have been organized. Each commit as a subject line followed by a short body, grounded in the diff — not in the original commit messages. Use this format for each commit:
+How the commits should have been organized. Each commit as a subject line followed by a short body, grounded in the diff — not in the original commit messages. Subject and body are prose about the change, not code. Use this format for each commit (untagged fence — three backticks with no language):
 
 ` + "```" + `
 <subject>
 
 <body>
 ` + "```" + `
+
+Inside these fences, write commit messages only. No code, no diff hunks, no +/- lines.
 
 ## Testing notes
 
@@ -136,8 +146,101 @@ func run(args []string) error {
 		return fmt.Errorf("running claude: %w", err)
 	}
 
+	if violations := verifyNoCodeChanges(resp); len(violations) > 0 {
+		fmt.Fprintln(os.Stderr, "rosy: output rejected — it contains code or diff content, which rosy forbids.")
+		fmt.Fprintln(os.Stderr, "Violations:")
+		for _, v := range violations {
+			fmt.Fprintf(os.Stderr, "  - %s\n", v)
+		}
+		return errors.New("refusing to print output that presents altered code")
+	}
+
 	_, err = io.Copy(os.Stdout, strings.NewReader(resp))
 	return err
+}
+
+// verifyNoCodeChanges returns a non-empty slice of human-readable violation
+// messages when the Claude response contains any form of code, diff, or
+// patch content. rosy is a descriptive tool; it must never render altered
+// source. This check is deterministic and runs before anything is printed.
+func verifyNoCodeChanges(out string) []string {
+	var violations []string
+
+	lines := strings.Split(out, "\n")
+	inFence := false
+	fenceTag := ""
+	fenceStart := 0
+
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+
+		// Diff hunk headers / file markers are forbidden anywhere.
+		if !inFence {
+			if strings.HasPrefix(trimmed, "@@ ") && strings.Contains(trimmed, " @@") {
+				violations = append(violations, fmt.Sprintf("line %d: diff hunk header (@@ … @@)", i+1))
+			}
+			if strings.HasPrefix(trimmed, "--- ") || strings.HasPrefix(trimmed, "+++ ") {
+				violations = append(violations, fmt.Sprintf("line %d: diff file marker (--- / +++)", i+1))
+			}
+		}
+
+		// Fence open/close tracking. A fence is a line whose first non-space
+		// content is three or more backticks.
+		if strings.HasPrefix(trimmed, "```") {
+			if !inFence {
+				inFence = true
+				fenceStart = i + 1
+				fenceTag = strings.TrimSpace(strings.TrimLeft(trimmed, "`"))
+				if fenceTag != "" {
+					violations = append(violations,
+						fmt.Sprintf("line %d: fenced code block with language tag %q (only untagged fences for commit messages are allowed)", fenceStart, fenceTag))
+				}
+			} else {
+				inFence = false
+				fenceTag = ""
+			}
+			continue
+		}
+
+		// Inside any fence, reject diff-style +/- lines. Commit-message
+		// bodies never start lines with `+ ` or `- ` markers.
+		if inFence {
+			if isDiffAddRemoveLine(line) {
+				violations = append(violations,
+					fmt.Sprintf("line %d: diff +/- line inside fenced block opened at line %d", i+1, fenceStart))
+			}
+		}
+	}
+
+	if inFence {
+		violations = append(violations, fmt.Sprintf("line %d: unterminated fenced block", fenceStart))
+	}
+
+	return violations
+}
+
+// isDiffAddRemoveLine reports whether a line looks like a unified-diff
+// addition or removal — i.e. starts with '+' or '-' followed by a space or
+// non-whitespace content (but not '+++' or '---' which are handled
+// elsewhere, and not markdown list markers like '- item' which have the
+// dash followed by a space at the *start* of a line outside a fence).
+func isDiffAddRemoveLine(line string) bool {
+	if len(line) == 0 {
+		return false
+	}
+	c := line[0]
+	if c != '+' && c != '-' {
+		return false
+	}
+	// Triple markers are caught separately; ignore here to avoid double-reporting.
+	if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+		return false
+	}
+	if len(line) == 1 {
+		return false
+	}
+	// '+ something' or '-something' (typical diff) — flag either.
+	return true
 }
 
 func validatePRURL(s string) error {
