@@ -1,7 +1,6 @@
 # rosy
 
-> *History is written by the victors. `rosy` re-writes history
-> after the fact, with more time and better vibes.*
+> *They say never rewrite history. They haven't seen my commit messages.*
 
 `rosy` looks at a GitHub PR through rose-colored glasses and asks Claude 
 to redraft its commit history into what probably *should* have happened.
