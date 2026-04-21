@@ -10,6 +10,8 @@ composing the log for a future reader instead of for yourself at 11pm.
 The output is a TUI in a rose palette, not a git rewrite. Your actual
 history remains exactly as ashamed as you left it.
 
+![rosy TUI showing three panes: a commit list on the left and a syntax-highlighted diff on the right](rosy.png)
+
 ## Install
 
 ```bash
