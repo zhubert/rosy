@@ -111,10 +111,13 @@ func run(args []string) error {
 		return errors.New("`claude` not found on PATH — install Claude Code")
 	}
 
+	status("pulling down PR metadata")
 	meta, err := fetchMeta(pr)
 	if err != nil {
 		return fmt.Errorf("fetching PR metadata: %w", err)
 	}
+	status("pulling down PR diff (%d file%s, +%d / -%d)",
+		meta.ChangedFiles, pluralS(meta.ChangedFiles), meta.Additions, meta.Deletions)
 
 	diff, err := fetchDiff(pr)
 	if err != nil {
@@ -126,11 +129,13 @@ func run(args []string) error {
 
 	prompt := buildPrompt(meta, diff)
 
+	status("arranging commits (this usually takes a minute)")
 	resp, err := runClaude(prompt)
 	if err != nil {
 		return fmt.Errorf("running claude: %w", err)
 	}
 
+	status("verifying diff parity")
 	if violations := verifyDiffParity(diff, resp); len(violations) > 0 {
 		fmt.Fprintln(os.Stderr, "rosy: output rejected — generated commits do not reproduce the PR's diff exactly.")
 		fmt.Fprintln(os.Stderr, "A rosy output must preserve every line of the original change. Violations:")
@@ -140,8 +145,21 @@ func run(args []string) error {
 		return errors.New("refusing to print output: generated diff does not match PR diff")
 	}
 
+	status("done")
 	_, err = io.Copy(os.Stdout, strings.NewReader(resp))
 	return err
+}
+
+// status prints a progress line to stderr so stdout stays clean for piping.
+func status(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "rosy: "+format+"\n", args...)
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // fileDiff holds the multisets of added/removed lines for a single file.
