@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -100,7 +101,7 @@ func main() {
 }
 
 func run(args []string) error {
-	model := "sonnet"
+	model := "opus"
 	var pr string
 	demo := false
 	for i := 0; i < len(args); i++ {
@@ -168,7 +169,7 @@ func run(args []string) error {
 	prompt := buildPrompt(meta, diff)
 
 	t = startGhostWriting(model)
-	resp, err := runClaude(prompt, model)
+	resp, err := runClaude(prompt, model, t.addLine)
 	t.end()
 	if err != nil {
 		return fmt.Errorf("running claude: %w", err)
@@ -545,22 +546,116 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --model <name>  claude model to use (default: sonnet; e.g. sonnet, opus, haiku)")
 }
 
-func runClaude(prompt, model string) (string, error) {
-	args := []string{"-p"}
+func runClaude(prompt, model string, onLine func(string)) (string, error) {
+	isOpus := strings.Contains(strings.ToLower(model), "opus")
+
+	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"}
+	if isOpus {
+		args = append(args, "--betas", "interleaved-thinking-2025-05-14")
+	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	cmd := exec.Command("claude", args...)
 	cmd.Stdin = strings.NewReader(prompt)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	var result string
+	// thinkingBlocks tracks which content block indices are thinking blocks.
+	// Only those indices are streamed to onLine; text blocks are skipped entirely.
+	thinkingBlocks := map[float64]bool{}
+	pendingByIndex := map[float64]*strings.Builder{}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+		if len(raw) == 0 {
+			continue
+		}
+		var event map[string]any
+		if json.Unmarshal(raw, &event) != nil {
+			continue
+		}
+		switch event["type"] {
+		case "stream_event":
+			if onLine == nil {
+				continue
+			}
+			inner, _ := event["event"].(map[string]any)
+			if inner == nil {
+				continue
+			}
+			switch inner["type"] {
+			case "content_block_start":
+				idx, _ := inner["index"].(float64)
+				block, _ := inner["content_block"].(map[string]any)
+				if block != nil && block["type"] == "thinking" {
+					thinkingBlocks[idx] = true
+					pendingByIndex[idx] = &strings.Builder{}
+				}
+			case "content_block_delta":
+				idx, _ := inner["index"].(float64)
+				if !thinkingBlocks[idx] {
+					continue
+				}
+				delta, _ := inner["delta"].(map[string]any)
+				if delta == nil || delta["type"] != "thinking_delta" {
+					continue
+				}
+				text, _ := delta["thinking"].(string)
+				pending := pendingByIndex[idx]
+				streamLines(text, pending, func(line string) {
+					if t := strings.TrimSpace(line); t != "" {
+						onLine(t)
+					}
+				})
+			}
+		case "result":
+			if s, _ := event["result"].(string); s != "" {
+				result = s
+			}
+			if isErr, _ := event["is_error"].(bool); isErr {
+				msg, _ := event["error"].(string)
+				if msg == "" {
+					msg = "claude returned an error"
+				}
+				_ = cmd.Wait()
+				return "", errors.New(msg)
+			}
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
 		return "", errors.New(msg)
 	}
-	return stdout.String(), nil
+	if result == "" {
+		return "", errors.New("no result received from claude")
+	}
+	return result, nil
+}
+
+// streamLines feeds text into pending, emitting completed lines via emit.
+func streamLines(text string, pending *strings.Builder, emit func(string)) {
+	for _, ch := range text {
+		if ch == '\n' {
+			emit(pending.String())
+			pending.Reset()
+		} else {
+			pending.WriteRune(ch)
+		}
+	}
 }

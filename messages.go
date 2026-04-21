@@ -27,9 +27,9 @@ func startReadingDiff(files, adds, dels int) *stepTimer {
 
 func startGhostWriting(model string) *stepTimer {
 	return startStep(fmt.Sprintf(pick(
-		"ghost-writing better commits via %s",
-		"composing the commit log we deserve via %s",
-		"asking %s to tidy the commits",
+		"ghost-writing better commits via %s (takes a few minutes)",
+		"composing the commit log we deserve via %s — grab a coffee",
+		"asking %s to tidy the commits (patience, this takes a while)",
 	), model))
 }
 
