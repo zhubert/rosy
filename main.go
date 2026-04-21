@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
+
+var prURLPattern = regexp.MustCompile(`^/[^/]+/[^/]+/pull/\d+/?$`)
 
 const systemPreamble = `You are presenting this PR at its best. Produce a rose-colored version of the PR — what it would look like if the author had been thorough and disciplined. Do not invent functionality that isn't in the diff. If the diff doesn't support a claim, omit it. Ground every claim in the diff, not in the original (possibly sloppy) title, body, or commit messages.`
 
@@ -93,14 +97,17 @@ func main() {
 
 func run(args []string) error {
 	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: rosy <pr>")
-		fmt.Fprintln(os.Stderr, "  <pr> is a full URL, owner/repo#123, or a bare number inside a checkout")
+		fmt.Fprintln(os.Stderr, "usage: rosy <pr-url>")
+		fmt.Fprintln(os.Stderr, "  <pr-url> is a full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123")
 		if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
 			return nil
 		}
-		return errors.New("missing PR argument")
+		return errors.New("missing PR URL")
 	}
 	pr := args[0]
+	if err := validatePRURL(pr); err != nil {
+		return err
+	}
 
 	if _, err := exec.LookPath("gh"); err != nil {
 		return errors.New("`gh` not found on PATH — install GitHub CLI and run `gh auth login`")
@@ -131,6 +138,23 @@ func run(args []string) error {
 
 	_, err = io.Copy(os.Stdout, strings.NewReader(resp))
 	return err
+}
+
+func validatePRURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("not a GitHub PR URL: %q (expected https://github.com/owner/repo/pull/123)", s)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("not a GitHub PR URL: %q (expected https scheme)", s)
+	}
+	if u.Host != "github.com" && u.Host != "www.github.com" {
+		return fmt.Errorf("not a github.com URL: %q", s)
+	}
+	if !prURLPattern.MatchString(u.Path) {
+		return fmt.Errorf("not a PR URL: %q (expected path /owner/repo/pull/<number>)", s)
+	}
+	return nil
 }
 
 func fetchMeta(pr string) (*prMeta, error) {
