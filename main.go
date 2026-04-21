@@ -705,25 +705,43 @@ func extractRepoSlug(prURL string) string {
 	return ""
 }
 
-func checkRepo(slug string) error {
+// checkRepo returns the name of the git remote whose URL points to the given
+// github.com slug, or an error if none is found.
+func checkRepo(slug string) (string, error) {
 	out, err := exec.Command("git", "remote", "-v").Output()
 	if err != nil {
-		return errors.New("not in a git repository — cd into the repo first")
+		return "", errors.New("not in a git repository — cd into the repo first")
 	}
-	s := string(out)
-	for _, needle := range []string{
-		"github.com/" + slug + ".git",
-		"github.com/" + slug + " ",
-		"github.com/" + slug + "\t",
-		"github.com:" + slug + ".git",
-		"github.com:" + slug + " ",
-		"github.com:" + slug + "\t",
-	} {
-		if strings.Contains(s, needle) {
-			return nil
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		remoteName, remoteURL := fields[0], fields[1]
+		for _, needle := range []string{
+			"github.com/" + slug + ".git",
+			"github.com/" + slug,
+			"github.com:" + slug + ".git",
+			"github.com:" + slug,
+		} {
+			if strings.Contains(remoteURL, needle) {
+				return remoteName, nil
+			}
 		}
 	}
-	return fmt.Errorf("no remote points to github.com/%s — cd into the right repo first", slug)
+	return "", fmt.Errorf("no remote points to github.com/%s — cd into the right repo first", slug)
+}
+
+func extractPRNumber(prURL string) string {
+	u, err := url.Parse(prURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(parts) == 4 && parts[2] == "pull" {
+		return parts[3]
+	}
+	return ""
 }
 
 func applyRosy(ctx *prContext, commits []parsedCommit) error {
@@ -735,20 +753,39 @@ func applyRosy(ctx *prContext, commits []parsedCommit) error {
 		return errors.New("working tree is not clean — commit or stash changes first")
 	}
 
-	if err := checkRepo(ctx.RepoSlug); err != nil {
+	remote, err := checkRepo(ctx.RepoSlug)
+	if err != nil {
 		return err
+	}
+
+	prNum := extractPRNumber(ctx.PRURL)
+	if prNum == "" {
+		return fmt.Errorf("could not parse PR number from %s", ctx.PRURL)
+	}
+
+	status(fmt.Sprintf("fetching PR #%s", prNum))
+	refspec := fmt.Sprintf("+refs/pull/%s/head:%s", prNum, ctx.Branch)
+	var fetchErr bytes.Buffer
+	fetchCmd := exec.Command("git", "fetch", remote, refspec)
+	fetchCmd.Stderr = &fetchErr
+	if err := fetchCmd.Run(); err != nil {
+		msg := strings.TrimSpace(fetchErr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("git fetch: %s", msg)
 	}
 
 	status(fmt.Sprintf("checking out %s", ctx.Branch))
 	var coErr bytes.Buffer
-	coCmd := exec.Command("gh", "pr", "checkout", ctx.PRURL)
+	coCmd := exec.Command("git", "checkout", ctx.Branch)
 	coCmd.Stderr = &coErr
 	if err := coCmd.Run(); err != nil {
 		msg := strings.TrimSpace(coErr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return fmt.Errorf("gh pr checkout: %s", msg)
+		return fmt.Errorf("git checkout: %s", msg)
 	}
 
 	headOut, err := exec.Command("git", "rev-parse", "HEAD").Output()
