@@ -211,19 +211,18 @@
       <p class="tagline">the commit history you wish you'd written</p>
 
       <blockquote class="epigraph">
-        History is written by the victors. <em>rosy</em> is written by
-        the author, after the fact, with more time and better vibes.
+        History is written by the victors. <em>rosy</em> re-writes history
+        after the fact, with more time and better vibes.
       </blockquote>
 
       <p>
-        <code>rosy</code> opens a GitHub PR and redrafts its commit
-        history — not what happened, but what <em>should</em> have
-        happened, if you'd been composing the log for a future reader
-        instead of for yourself at 11pm.
+        <code>rosy</code> looks at a GitHub PR through rose-colored glasses
+        and asks Claude to redraft its commit history into what probably
+        <em>should</em> have happened.
       </p>
       <p>
-        The output is a TUI in a rose palette, not a git rewrite. Your
-        actual history remains exactly as ashamed as you left it.
+        The output is just for display in a pretty TUI, not an actual git
+        rewrite! That would be crazy...
       </p>
 
       <h2>Install</h2>
@@ -297,14 +296,15 @@ after the first one.</span>
 
       <h2>On the occasional embellishment</h2>
       <p>
-        The reconstruction is line-for-line faithful by contract: every
-        added line in the PR must appear exactly once across the
-        fabricated commits. A deterministic post-check enforces this.
+        The reconstruction is line-for-line faithful by contract: every added
+        line in the PR must appear exactly once across the fabricated commits,
+        same for removed lines. A deterministic post-check enforces this.
       </p>
       <p>
-        When the muse drifts, <code>rosy</code> flags the divergence in
-        crimson and opens the TUI anyway. This is a fun project, not a
-        court record. Trust the diffs; treat the prose as a suggestion.
+        When the muse drifts — duplicating a hunk across two commits, or
+        inventing a stray line of its own — <code>rosy</code> flags the
+        divergence in crimson and opens the TUI anyway. This is a fun project,
+        not a court record. Trust the diffs; treat the prose as a suggestion.
       </p>
 
       <footer>
