@@ -8,6 +8,8 @@ to redraft its commit history into what probably *should* have happened.
 The output is just for display in a pretty TUI, not an actual git rewrite!
 That would be crazy...
 
+*(Unless you press `i`.)*
+
 ![rosy TUI showing three panes: a commit list on the left and a syntax-highlighted diff on the right](docs/rosy.png)
 
 ## Install

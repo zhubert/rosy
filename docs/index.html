@@ -156,6 +156,21 @@
         The output is just for display in a pretty TUI, not an actual git
         rewrite! That would be crazy...
       </p>
+      <p>
+        <em>(Unless you press <code>i</code>.)</em>
+      </p>
+
+      <h2>No Really, Don't</h2>
+      <p>
+        Inside the TUI, <code>i</code> will attempt to actually apply the
+        fabricated history to your local branch. A two-stage confirmation
+        stands between you and regret. The first screen asks
+        <em>"are you crazy?"</em> It's not rhetorical.
+      </p>
+      <p>
+        <code>rosy</code> will never force push. It will, however,
+        <code>git reset --hard</code>. You've been warned with love.
+      </p>
 
       <h2>Install</h2>
       <div class="sh"><span class="prompt">$ </span><span class="cmd">brew install zhubert/tap/rosy</span></div>
