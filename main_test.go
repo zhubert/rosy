@@ -5,93 +5,216 @@ import (
 	"testing"
 )
 
-func TestVerifyNoCodeChanges_Clean(t *testing.T) {
-	ok := `# Title
+// A PR diff with two files, used as the ground truth across multiple tests.
+const prDiffFixture = `diff --git a/foo.go b/foo.go
+index 1111111..2222222 100644
+--- a/foo.go
++++ b/foo.go
+@@ -1,5 +1,6 @@
+ package foo
 
-Refactor the widget pipeline
+-func Old() {}
++func New() {}
++func Extra() {}
 
-## Summary
+ var X = 1
+diff --git a/bar.go b/bar.go
+index 3333333..4444444 100644
+--- a/bar.go
++++ b/bar.go
+@@ -10,3 +10,3 @@ package bar
 
-Extracts the widget assembly into a dedicated helper so the request handler
-reads top-to-bottom.
-
-## Proposed commit structure
-
-` + "```" + `
-refactor: extract widget assembler
-
-Pulls the three-step assembly out of the handler so each step has a name.
-No behavior change.
-` + "```" + `
-
-## Risks / open questions
-
-None identified.
+-const N = 1
++const N = 2
 `
-	if v := verifyNoCodeChanges(ok); len(v) != 0 {
-		t.Fatalf("expected clean output to pass, got violations: %v", v)
+
+func TestVerifyDiffParity_MatchingSingleCommit(t *testing.T) {
+	// One commit that replays the whole PR diff — should pass.
+	gen := `commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Author: Dev <dev@example.com>
+Date:   Mon Apr 21 10:00:00 2026 +0000
+
+    refactor everything
+
+` + prDiffFixture
+
+	if v := verifyDiffParity(prDiffFixture, gen); len(v) != 0 {
+		t.Fatalf("expected parity, got violations: %v", v)
 	}
 }
 
-func TestVerifyNoCodeChanges_RejectsDiffFence(t *testing.T) {
-	bad := "## Changes\n\n```diff\n- old\n+ new\n```\n"
-	v := verifyNoCodeChanges(bad)
+func TestVerifyDiffParity_MatchingSplitAcrossCommits(t *testing.T) {
+	// Same content, split into two commits, one per file. Should still pass
+	// because parity is a per-file multiset check, independent of grouping.
+	gen := `commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Author: Dev <dev@example.com>
+Date:   Mon Apr 21 10:00:00 2026 +0000
+
+    rename Old to New and add Extra
+
+diff --git a/foo.go b/foo.go
+index 1111111..2222222 100644
+--- a/foo.go
++++ b/foo.go
+@@ -1,5 +1,6 @@
+ package foo
+
+-func Old() {}
++func New() {}
++func Extra() {}
+
+ var X = 1
+
+commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+Author: Dev <dev@example.com>
+Date:   Mon Apr 21 10:05:00 2026 +0000
+
+    bump N
+
+diff --git a/bar.go b/bar.go
+index 3333333..4444444 100644
+--- a/bar.go
++++ b/bar.go
+@@ -10,3 +10,3 @@ package bar
+
+-const N = 1
++const N = 2
+`
+	if v := verifyDiffParity(prDiffFixture, gen); len(v) != 0 {
+		t.Fatalf("expected parity across split commits, got violations: %v", v)
+	}
+}
+
+func TestVerifyDiffParity_RejectsAlteredLine(t *testing.T) {
+	// Generated output rewrites "func New()" to "func Renamed()" — not in PR.
+	gen := strings.Replace(prDiffFixture, "+func New() {}", "+func Renamed() {}", 1)
+	v := verifyDiffParity(prDiffFixture, gen)
 	if len(v) == 0 {
-		t.Fatalf("expected violations for ```diff fence, got none")
+		t.Fatalf("expected violation for altered + line, got none")
 	}
 	joined := strings.Join(v, " | ")
-	if !strings.Contains(joined, "language tag") {
-		t.Fatalf("expected language-tag violation, got: %s", joined)
+	if !strings.Contains(joined, "foo.go") || !strings.Contains(joined, "added") {
+		t.Fatalf("expected foo.go/added violation, got: %s", joined)
 	}
 }
 
-func TestVerifyNoCodeChanges_RejectsLanguageFence(t *testing.T) {
-	bad := "## Changes\n\n```go\nfunc Foo() {}\n```\n"
-	v := verifyNoCodeChanges(bad)
+func TestVerifyDiffParity_RejectsMissingLine(t *testing.T) {
+	// Drop the "+func Extra() {}" line from the generated output.
+	gen := strings.Replace(prDiffFixture, "+func Extra() {}\n", "", 1)
+	v := verifyDiffParity(prDiffFixture, gen)
 	if len(v) == 0 {
-		t.Fatalf("expected violations for ```go fence, got none")
+		t.Fatalf("expected violation for missing + line, got none")
 	}
 }
 
-func TestVerifyNoCodeChanges_RejectsHunkHeader(t *testing.T) {
-	bad := "Walkthrough:\n\n@@ -1,3 +1,4 @@ func main\n"
-	v := verifyNoCodeChanges(bad)
+func TestVerifyDiffParity_RejectsInventedLine(t *testing.T) {
+	gen := strings.Replace(prDiffFixture,
+		"+func New() {}\n+func Extra() {}\n",
+		"+func New() {}\n+func Extra() {}\n+func Invented() {}\n", 1)
+	v := verifyDiffParity(prDiffFixture, gen)
 	if len(v) == 0 {
-		t.Fatalf("expected violations for hunk header, got none")
+		t.Fatalf("expected violation for invented + line, got none")
 	}
 }
 
-func TestVerifyNoCodeChanges_RejectsFileMarkers(t *testing.T) {
-	bad := "--- a/foo.go\n+++ b/foo.go\n"
-	v := verifyNoCodeChanges(bad)
-	if len(v) < 2 {
-		t.Fatalf("expected at least 2 violations for file markers, got: %v", v)
-	}
-}
-
-func TestVerifyNoCodeChanges_RejectsDiffLinesInsideUntaggedFence(t *testing.T) {
-	bad := "## Proposed commit structure\n\n```\n- old line\n+ new line\n```\n"
-	v := verifyNoCodeChanges(bad)
+func TestVerifyDiffParity_RejectsExtraFile(t *testing.T) {
+	gen := prDiffFixture + `diff --git a/extra.go b/extra.go
+index 5555555..6666666 100644
+--- a/extra.go
++++ b/extra.go
+@@ -0,0 +1,1 @@
++package extra
+`
+	v := verifyDiffParity(prDiffFixture, gen)
 	if len(v) == 0 {
-		t.Fatalf("expected violations for +/- lines in untagged fence, got none")
+		t.Fatalf("expected violation for extra file, got none")
+	}
+	if !strings.Contains(strings.Join(v, " "), "extra.go") {
+		t.Fatalf("expected extra.go mentioned, got: %v", v)
 	}
 }
 
-func TestVerifyNoCodeChanges_AllowsMarkdownListDash(t *testing.T) {
-	// Markdown "- item" outside a fence is fine; the check only fires
-	// inside fences.
-	ok := "## Changes\n\n- Updated widget pipeline\n- Added telemetry\n"
-	if v := verifyNoCodeChanges(ok); len(v) != 0 {
-		t.Fatalf("expected markdown list to pass, got violations: %v", v)
-	}
-}
-
-func TestVerifyNoCodeChanges_RejectsUnterminatedFence(t *testing.T) {
-	bad := "## Proposed commit structure\n\n```\nrefactor: something\n\nBody text here.\n"
-	v := verifyNoCodeChanges(bad)
+func TestVerifyDiffParity_RejectsMissingFile(t *testing.T) {
+	// Only include foo.go — drop bar.go entirely.
+	firstFile := prDiffFixture[:strings.Index(prDiffFixture, "diff --git a/bar.go")]
+	v := verifyDiffParity(prDiffFixture, firstFile)
 	if len(v) == 0 {
-		t.Fatalf("expected violation for unterminated fence, got none")
+		t.Fatalf("expected violation for missing file, got none")
 	}
+	if !strings.Contains(strings.Join(v, " "), "bar.go") {
+		t.Fatalf("expected bar.go mentioned, got: %v", v)
+	}
+}
+
+func TestVerifyDiffParity_IgnoresContextAndLineNumbers(t *testing.T) {
+	// Same +/- content per file, but different @@ numbers and different
+	// (irrelevant) context lines. Should still pass.
+	gen := `commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Author: Dev <dev@example.com>
+Date:   Mon Apr 21 10:00:00 2026 +0000
+
+    restructure
+
+diff --git a/foo.go b/foo.go
+--- a/foo.go
++++ b/foo.go
+@@ -99,99 +99,99 @@
+-func Old() {}
++func New() {}
++func Extra() {}
+diff --git a/bar.go b/bar.go
+--- a/bar.go
++++ b/bar.go
+@@ -0,0 +0,0 @@
+-const N = 1
++const N = 2
+`
+	if v := verifyDiffParity(prDiffFixture, gen); len(v) != 0 {
+		t.Fatalf("expected parity ignoring context/line numbers, got violations: %v", v)
+	}
+}
+
+func TestParseDiffFiles_HandlesGitLogPWrapping(t *testing.T) {
+	// 'git log -p' style: commit header, indented message, blank line, then diff.
+	// Parser must not confuse message text with diff content.
+	text := `commit abcdefabcdefabcdefabcdefabcdefabcdefabcd
+Author: Dev <dev@example.com>
+Date:   Mon Apr 21 10:00:00 2026 +0000
+
+    subject line
+
+    body paragraph that mentions + and - and @@ in prose,
+    and even "func Old() {}" as plain text.
+
+diff --git a/foo.go b/foo.go
+--- a/foo.go
++++ b/foo.go
+@@ -1,1 +1,1 @@
+-a
++b
+`
+	files := parseDiffFiles(text)
+	fd, ok := files["foo.go"]
+	if !ok {
+		t.Fatalf("expected foo.go, got keys: %v", keys(files))
+	}
+	if len(fd.added) != 1 || fd.added[0] != "b" {
+		t.Errorf("added: %v", fd.added)
+	}
+	if len(fd.removed) != 1 || fd.removed[0] != "a" {
+		t.Errorf("removed: %v", fd.removed)
+	}
+	if len(files) != 1 {
+		t.Errorf("expected exactly one file, got: %v", keys(files))
+	}
+}
+
+func keys(m map[string]*fileDiff) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func TestValidatePRURL(t *testing.T) {

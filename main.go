@@ -10,62 +10,47 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 )
 
 var prURLPattern = regexp.MustCompile(`^/[^/]+/[^/]+/pull/\d+/?$`)
 
-const systemPreamble = `You are presenting this PR at its best. Produce a rose-colored version of the PR — what it would look like if the author had been thorough and disciplined. Do not invent functionality that isn't in the diff. If the diff doesn't support a claim, omit it. Ground every claim in the diff, not in the original (possibly sloppy) title, body, or commit messages.
+const systemPreamble = `You are presenting this PR at its best — a rose-colored version of what the commit history should have looked like if the author had been thorough and disciplined.
 
-HARD CONSTRAINT — you MUST NOT modify, rewrite, or suggest changes to the PR's code. Your output is a description of the PR as-is; it is never a proposal to alter the code. Specifically:
-  - Do NOT include diff blocks, patches, or hunk headers (no lines starting with '+ ', '- ', '@@ ', '--- ', '+++ ').
-  - Do NOT include source-code snippets in any language (no fenced blocks tagged as a programming language, e.g. ` + "```go" + `, ` + "```js" + `, ` + "```python" + `, ` + "```diff" + `, ` + "```patch" + `).
-  - Refer to code by identifier names and file paths in prose or bullets only. Never paste, quote, rewrite, or "cleaned up" versions of the code.
-  - The only fenced code blocks permitted in your output are untagged fences (three backticks with NO language tag) used to format proposed commit messages as specified below.
+HARD CONSTRAINT (enforced by a deterministic post-check): the union of all your commits' diffs MUST exactly match the PR's full diff, line for line, per file. You may split, regroup, and reorder changes across commits, but you may NOT add, remove, rename, or alter any line of code. Every '+' line and every '-' line in the PR's diff must appear exactly once across your commits, attributed to the same file path. No inventing code. No "cleaning up" code. No omissions.
 
-If you are unsure whether something counts as code, omit it. A deterministic post-check will reject output that violates these rules.`
+If any change in the PR is impossible to attribute cleanly to a single commit, keep it in whichever commit it fits best — but do not drop it and do not duplicate it.`
 
-const outputSpec = `Produce markdown with these exact section headers (in this order):
+const outputSpec = `Output format: mimic 'git log -p' exactly. Nothing before the first commit, nothing after the last commit. No preamble, no headings, no summary, no trailing notes. Just commits.
 
-# Title
+Each commit is structured as:
 
-A crisp, imperative-mood title. One line.
+commit <40-char lowercase hex sha>          (fabricate a plausible sha; any 40-char hex is fine, keep them distinct)
+Author: <Name> <<email>>                     (use the PR author if known; otherwise "PR Author <author@example.com>")
+Date:   <Day Mon DD HH:MM:SS YYYY +0000>     (any plausible date; increment by minutes across commits)
 
-## Summary
+    <subject line — imperative mood, ≤72 chars>
 
-1–3 sentence overview.
+    <optional body paragraphs, wrapped at ~72 chars, each line indented by 4 spaces>
 
-## Motivation
+<unified diff for this commit, in standard 'git diff' format>
 
-Why this change exists. Infer from the diff if the PR body is useless.
+Rules for the diff portion of each commit:
+  - Start each file with: diff --git a/<path> b/<path>
+  - Include the standard headers (index line optional but encouraged; --- a/<path> and +++ b/<path> are REQUIRED for modified files).
+  - Include @@ hunk headers. Line numbers inside @@ may be approximate — the post-check ignores them.
+  - Every '+' and '-' line must be copied verbatim from the PR's diff (same content, same file). Context lines can be drawn from the PR's diff too.
+  - Do not introduce any '+' or '-' line that is not in the PR's diff. Do not drop any.
 
-## Changes
+Between commits, separate with a single blank line. Do not wrap commits in code fences. Do not use markdown anywhere. This is plain text that should look like the output of 'git log -p --reverse'.
 
-Bulleted walkthrough of what actually changed.
-
-## Proposed commit structure
-
-How the commits should have been organized. Each commit as a subject line followed by a short body, grounded in the diff — not in the original commit messages. Subject and body are prose about the change, not code. Use this format for each commit (untagged fence — three backticks with no language):
-
-` + "```" + `
-<subject>
-
-<body>
-` + "```" + `
-
-Inside these fences, write commit messages only. No code, no diff hunks, no +/- lines.
-
-## Testing notes
-
-What a reviewer should verify.
-
-## Risks / open questions
-
-Anything that looks sketchy, incomplete, or worth a second look. If there's nothing, say so.`
+Organize the commits to tell a coherent story of the change — logical, atomic, each independently reviewable — but the sum must still equal the original PR's diff.`
 
 type prAuthor struct {
 	Login string `json:"login"`
 	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 type prLabel struct {
@@ -146,101 +131,218 @@ func run(args []string) error {
 		return fmt.Errorf("running claude: %w", err)
 	}
 
-	if violations := verifyNoCodeChanges(resp); len(violations) > 0 {
-		fmt.Fprintln(os.Stderr, "rosy: output rejected — it contains code or diff content, which rosy forbids.")
-		fmt.Fprintln(os.Stderr, "Violations:")
+	if violations := verifyDiffParity(diff, resp); len(violations) > 0 {
+		fmt.Fprintln(os.Stderr, "rosy: output rejected — generated commits do not reproduce the PR's diff exactly.")
+		fmt.Fprintln(os.Stderr, "A rosy output must preserve every line of the original change. Violations:")
 		for _, v := range violations {
 			fmt.Fprintf(os.Stderr, "  - %s\n", v)
 		}
-		return errors.New("refusing to print output that presents altered code")
+		return errors.New("refusing to print output: generated diff does not match PR diff")
 	}
 
 	_, err = io.Copy(os.Stdout, strings.NewReader(resp))
 	return err
 }
 
-// verifyNoCodeChanges returns a non-empty slice of human-readable violation
-// messages when the Claude response contains any form of code, diff, or
-// patch content. rosy is a descriptive tool; it must never render altered
-// source. This check is deterministic and runs before anything is printed.
-func verifyNoCodeChanges(out string) []string {
-	var violations []string
+// fileDiff holds the multisets of added/removed lines for a single file.
+// Content only — line numbers and context lines are ignored, since the
+// point is to confirm that no code was invented, dropped, or altered.
+type fileDiff struct {
+	added   []string
+	removed []string
+}
 
-	lines := strings.Split(out, "\n")
-	inFence := false
-	fenceTag := ""
-	fenceStart := 0
+// parseDiffFiles walks a unified-diff stream and returns a map from file
+// path to the added/removed line content for that file. It is tolerant of
+// 'git log -p'-style output (commit headers, indented messages) interleaved
+// with the diffs: anything that is not clearly inside a diff hunk is
+// ignored.
+func parseDiffFiles(text string) map[string]*fileDiff {
+	files := map[string]*fileDiff{}
+	var currentPath string
+	inHunk := false
 
-	for i, line := range lines {
-		trimmed := strings.TrimLeft(line, " \t")
-
-		// Diff hunk headers / file markers are forbidden anywhere.
-		if !inFence {
-			if strings.HasPrefix(trimmed, "@@ ") && strings.Contains(trimmed, " @@") {
-				violations = append(violations, fmt.Sprintf("line %d: diff hunk header (@@ … @@)", i+1))
-			}
-			if strings.HasPrefix(trimmed, "--- ") || strings.HasPrefix(trimmed, "+++ ") {
-				violations = append(violations, fmt.Sprintf("line %d: diff file marker (--- / +++)", i+1))
-			}
+	ensure := func(path string) *fileDiff {
+		fd, ok := files[path]
+		if !ok {
+			fd = &fileDiff{}
+			files[path] = fd
 		}
+		return fd
+	}
 
-		// Fence open/close tracking. A fence is a line whose first non-space
-		// content is three or more backticks.
-		if strings.HasPrefix(trimmed, "```") {
-			if !inFence {
-				inFence = true
-				fenceStart = i + 1
-				fenceTag = strings.TrimSpace(strings.TrimLeft(trimmed, "`"))
-				if fenceTag != "" {
-					violations = append(violations,
-						fmt.Sprintf("line %d: fenced code block with language tag %q (only untagged fences for commit messages are allowed)", fenceStart, fenceTag))
-				}
-			} else {
-				inFence = false
-				fenceTag = ""
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			inHunk = false
+			currentPath = parseDiffGitPath(line)
+			if currentPath != "" {
+				ensure(currentPath)
 			}
 			continue
 		}
-
-		// Inside any fence, reject diff-style +/- lines. Commit-message
-		// bodies never start lines with `+ ` or `- ` markers.
-		if inFence {
-			if isDiffAddRemoveLine(line) {
-				violations = append(violations,
-					fmt.Sprintf("line %d: diff +/- line inside fenced block opened at line %d", i+1, fenceStart))
+		if strings.HasPrefix(line, "--- ") {
+			inHunk = false
+			continue
+		}
+		if strings.HasPrefix(line, "+++ ") {
+			// '+++ b/<path>' is the authoritative destination path. Fall
+			// back to it when 'diff --git' was missing or malformed.
+			if currentPath == "" {
+				p := strings.TrimPrefix(line, "+++ ")
+				p = strings.TrimPrefix(p, "b/")
+				if p != "/dev/null" {
+					currentPath = p
+					ensure(currentPath)
+				}
 			}
+			inHunk = false
+			continue
+		}
+		if strings.HasPrefix(line, "@@") {
+			inHunk = true
+			continue
+		}
+		if !inHunk || currentPath == "" {
+			continue
+		}
+		// Inside a hunk the only valid line prefixes are ' ', '+', '-', '\'.
+		// Anything else means the hunk has ended (e.g., a 'commit ...' line
+		// for the next entry in git log -p).
+		if len(line) == 0 {
+			continue
+		}
+		switch line[0] {
+		case '+':
+			files[currentPath].added = append(files[currentPath].added, line[1:])
+		case '-':
+			files[currentPath].removed = append(files[currentPath].removed, line[1:])
+		case ' ', '\\':
+			// context or '\ No newline at end of file' — skip
+		default:
+			inHunk = false
 		}
 	}
 
-	if inFence {
-		violations = append(violations, fmt.Sprintf("line %d: unterminated fenced block", fenceStart))
+	return files
+}
+
+func parseDiffGitPath(line string) string {
+	rest := strings.TrimPrefix(line, "diff --git ")
+	parts := strings.Fields(rest)
+	if len(parts) != 2 {
+		return ""
+	}
+	a := strings.TrimPrefix(parts[0], "a/")
+	b := strings.TrimPrefix(parts[1], "b/")
+	if b != "" {
+		return b
+	}
+	return a
+}
+
+// verifyDiffParity compares the PR's diff to the generated output and
+// returns a list of violations when they do not represent the same set of
+// changes. A successful return (empty slice) means every '+' and '-' line
+// in the PR's diff appears exactly once in the generated commits, with the
+// same file path, and no extra +/- lines were invented.
+func verifyDiffParity(prDiff, generated string) []string {
+	want := parseDiffFiles(prDiff)
+	got := parseDiffFiles(generated)
+
+	var violations []string
+
+	// Files present in the PR but missing or wrong in the output.
+	for path, w := range want {
+		g, ok := got[path]
+		if !ok {
+			violations = append(violations, fmt.Sprintf("missing file in generated output: %s", path))
+			continue
+		}
+		if d := describeMultisetDiff("added", path, w.added, g.added); d != "" {
+			violations = append(violations, d)
+		}
+		if d := describeMultisetDiff("removed", path, w.removed, g.removed); d != "" {
+			violations = append(violations, d)
+		}
 	}
 
+	// Files the model invented that the PR does not touch.
+	for path := range got {
+		if _, ok := want[path]; !ok {
+			violations = append(violations, fmt.Sprintf("generated output touches file not in PR: %s", path))
+		}
+	}
+
+	sort.Strings(violations)
 	return violations
 }
 
-// isDiffAddRemoveLine reports whether a line looks like a unified-diff
-// addition or removal — i.e. starts with '+' or '-' followed by a space or
-// non-whitespace content (but not '+++' or '---' which are handled
-// elsewhere, and not markdown list markers like '- item' which have the
-// dash followed by a space at the *start* of a line outside a fence).
-func isDiffAddRemoveLine(line string) bool {
-	if len(line) == 0 {
+func describeMultisetDiff(kind, path string, want, got []string) string {
+	if multisetEqual(want, got) {
+		return ""
+	}
+	wantCount := len(want)
+	gotCount := len(got)
+	extra, missing := multisetSymmetricDiff(want, got)
+	var sample string
+	if len(missing) > 0 {
+		sample = fmt.Sprintf(" missing: %q", firstLineSample(missing[0]))
+	} else if len(extra) > 0 {
+		sample = fmt.Sprintf(" extra: %q", firstLineSample(extra[0]))
+	}
+	return fmt.Sprintf("%s: %s lines differ (PR has %d, generated has %d;%s)",
+		path, kind, wantCount, gotCount, sample)
+}
+
+func firstLineSample(s string) string {
+	if len(s) > 80 {
+		return s[:77] + "..."
+	}
+	return s
+}
+
+func multisetEqual(a, b []string) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	c := line[0]
-	if c != '+' && c != '-' {
+	ca := countMap(a)
+	cb := countMap(b)
+	if len(ca) != len(cb) {
 		return false
 	}
-	// Triple markers are caught separately; ignore here to avoid double-reporting.
-	if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
-		return false
+	for k, v := range ca {
+		if cb[k] != v {
+			return false
+		}
 	}
-	if len(line) == 1 {
-		return false
-	}
-	// '+ something' or '-something' (typical diff) — flag either.
 	return true
+}
+
+// multisetSymmetricDiff returns (lines in got but not want, lines in want but not got).
+func multisetSymmetricDiff(want, got []string) (extra, missing []string) {
+	cw := countMap(want)
+	cg := countMap(got)
+	for k, v := range cg {
+		diff := v - cw[k]
+		for i := 0; i < diff; i++ {
+			extra = append(extra, k)
+		}
+	}
+	for k, v := range cw {
+		diff := v - cg[k]
+		for i := 0; i < diff; i++ {
+			missing = append(missing, k)
+		}
+	}
+	return extra, missing
+}
+
+func countMap(xs []string) map[string]int {
+	m := make(map[string]int, len(xs))
+	for _, x := range xs {
+		m[x]++
+	}
+	return m
 }
 
 func validatePRURL(s string) error {
@@ -302,32 +404,36 @@ func buildPrompt(m *prMeta, diff string) string {
 	b.WriteString("\n\n")
 	b.WriteString(outputSpec)
 	b.WriteString("\n\n---\n\n")
-	b.WriteString("# PR context\n\n")
+	b.WriteString("PR CONTEXT\n\n")
 
-	fmt.Fprintf(&b, "**Original title:** %s\n", m.Title)
+	fmt.Fprintf(&b, "Original title: %s\n", m.Title)
 	author := m.Author.Login
 	if author == "" {
 		author = m.Author.Name
 	}
 	if author != "" {
-		fmt.Fprintf(&b, "**Author:** %s\n", author)
+		email := m.Author.Email
+		if email == "" {
+			email = fmt.Sprintf("%s@users.noreply.github.com", author)
+		}
+		fmt.Fprintf(&b, "Author: %s <%s>\n", author, email)
 	}
 	if m.BaseRefName != "" || m.HeadRefName != "" {
-		fmt.Fprintf(&b, "**Branch:** %s → %s\n", m.HeadRefName, m.BaseRefName)
+		fmt.Fprintf(&b, "Branch: %s -> %s\n", m.HeadRefName, m.BaseRefName)
 	}
 	if len(m.Labels) > 0 {
 		names := make([]string, len(m.Labels))
 		for i, l := range m.Labels {
 			names[i] = l.Name
 		}
-		fmt.Fprintf(&b, "**Labels:** %s\n", strings.Join(names, ", "))
+		fmt.Fprintf(&b, "Labels: %s\n", strings.Join(names, ", "))
 	}
-	fmt.Fprintf(&b, "**Diffstat:** %d file(s) changed, +%d / -%d\n\n",
+	fmt.Fprintf(&b, "Diffstat: %d file(s) changed, +%d / -%d\n\n",
 		m.ChangedFiles, m.Additions, m.Deletions)
 
-	b.WriteString("## Original PR body\n\n")
+	b.WriteString("Original PR body:\n")
 	if strings.TrimSpace(m.Body) == "" {
-		b.WriteString("_(empty)_\n\n")
+		b.WriteString("(empty)\n\n")
 	} else {
 		b.WriteString(m.Body)
 		if !strings.HasSuffix(m.Body, "\n") {
@@ -336,42 +442,25 @@ func buildPrompt(m *prMeta, diff string) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("## Files changed\n\n")
-	if len(m.Files) == 0 {
-		b.WriteString("_(none reported)_\n\n")
-	} else {
-		for _, f := range m.Files {
-			fmt.Fprintf(&b, "- `%s` (+%d / -%d)\n", f.Path, f.Additions, f.Deletions)
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString("## Original commits\n\n")
+	b.WriteString("Original commits:\n")
 	if len(m.Commits) == 0 {
-		b.WriteString("_(none reported)_\n\n")
+		b.WriteString("(none reported)\n\n")
 	} else {
 		for _, c := range m.Commits {
 			short := c.OID
 			if len(short) > 7 {
 				short = short[:7]
 			}
-			fmt.Fprintf(&b, "- `%s` %s\n", short, c.MessageHeadline)
-			if strings.TrimSpace(c.MessageBody) != "" {
-				for _, line := range strings.Split(strings.TrimRight(c.MessageBody, "\n"), "\n") {
-					fmt.Fprintf(&b, "  > %s\n", line)
-				}
-			}
+			fmt.Fprintf(&b, "- %s %s\n", short, c.MessageHeadline)
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString("## Full diff\n\n")
-	b.WriteString("```diff\n")
+	b.WriteString("PR DIFF (authoritative — your commits must collectively reproduce this exactly):\n\n")
 	b.WriteString(diff)
 	if !strings.HasSuffix(diff, "\n") {
 		b.WriteString("\n")
 	}
-	b.WriteString("```\n")
 
 	return b.String()
 }
