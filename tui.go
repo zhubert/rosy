@@ -67,14 +67,18 @@ type model struct {
 
 	diff  viewport.Model
 	ready bool
+
+	ctx            *prContext
+	confirmStep    int // 0=off 1="are you crazy?" 2=real confirm
+	applyRequested bool
 }
 
-func newModel(commits []parsedCommit) model {
-	m := model{
+func newModel(commits []parsedCommit, ctx *prContext) model {
+	return model{
 		commits: commits,
 		focus:   paneCommits,
+		ctx:     ctx,
 	}
-	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -157,6 +161,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.confirmStep > 0 {
+			switch msg.String() {
+			case "y":
+				if m.confirmStep == 1 {
+					m.confirmStep = 2
+				} else {
+					m.applyRequested = true
+					return m, tea.Quit
+				}
+			case "n", "esc", "q", "ctrl+c":
+				if msg.String() == "ctrl+c" {
+					return m, tea.Quit
+				}
+				m.confirmStep = 0
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
@@ -166,6 +188,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m.focus = (m.focus + 2) % 3
 			return m, nil
+		case "i":
+			if m.ctx != nil {
+				m.confirmStep = 1
+				return m, nil
+			}
 		}
 
 		switch m.focus {
@@ -269,6 +296,9 @@ func (m *model) layout() {
 }
 
 func (m model) View() string {
+	if m.confirmStep > 0 {
+		return m.renderConfirm()
+	}
 	if !m.ready || m.width < 40 || m.height < 10 {
 		return styleMuted.Render("  rosy — terminal too small")
 	}
@@ -497,7 +527,86 @@ func (m model) renderStatus() string {
 		sep,
 		styleMuted.Render("q ") + styleSubtle.Render("quit"),
 	}
+	if m.ctx != nil {
+		parts = append(parts, sep, styleMuted.Render("i ")+styleSubtle.Render("implement"))
+	}
 	return strings.Join(parts, "")
+}
+
+func (m model) renderConfirm() string {
+	w := 60
+	if m.width > 0 && m.width-8 < w {
+		w = m.width - 8
+	}
+	if w < 24 {
+		w = 24
+	}
+
+	var b strings.Builder
+	line := func(s string) { b.WriteString(s); b.WriteString("\n") }
+
+	if m.confirmStep == 1 {
+		line(styleHot.Render("are you crazy?"))
+		line("")
+		line(styleSubtle.Render("rosy is about to rewrite your local branch history."))
+		line("")
+		line(styleMuted.Render("y") + styleSubtle.Render("  yes, in this case I am") + "   " + styleMuted.Render("n") + styleSubtle.Render("  cancel"))
+	} else {
+		ctx := m.ctx
+		baseSHA := shortSHA(ctx.BaseSHA)
+		headSHA := shortSHA(ctx.HeadSHA)
+
+		line(styleHot.Render("apply rosy to " + ctx.Branch + "?"))
+		line("")
+		line(styleMuted.Render("rosy will:"))
+		line("")
+		line(styleMuted.Render("  1  ") + styleText.Render("gh pr checkout"))
+		line(styleMuted.Render("     set local branch to PR head (" + headSHA + ")"))
+		line("")
+		line(styleMuted.Render("  2  ") + styleText.Render("git reset --hard " + baseSHA))
+		line(styleMuted.Render("     rewind to PR base commit"))
+		line("")
+		line(styleMuted.Render("  3  ") + styleText.Render(fmt.Sprintf("apply %d commit%s", len(m.commits), pluralS(len(m.commits)))))
+		line(styleMuted.Render("     rosy's reorganized history"))
+		line("")
+		line(styleMuted.Render("  4  ") + styleText.Render("verify final tree == "+headSHA))
+		line(styleMuted.Render("     rolled back automatically on mismatch"))
+		line("")
+		line(styleHot.Render("rosy will NEVER force push."))
+		line("")
+
+		if len(ctx.Violations) == 0 {
+			line(styleAdd.Render("parity ✓") + styleMuted.Render("  generated diff matches PR exactly"))
+		} else {
+			line(styleDel.Render(fmt.Sprintf("parity ✗  %d line%s drifted — apply with caution",
+				ctx.DivergenceCount, pluralS(ctx.DivergenceCount))))
+			line("")
+			shown := ctx.Violations
+			extra := 0
+			if len(shown) > 4 {
+				extra = len(shown) - 4
+				shown = shown[:4]
+			}
+			for _, v := range shown {
+				line(styleDel.Render("  · " + truncate(v, w-4)))
+			}
+			if extra > 0 {
+				line(styleMuted.Render(fmt.Sprintf("  · +%d more", extra)))
+			}
+			line("")
+		}
+
+		line(styleMuted.Render("y") + styleSubtle.Render("  apply") + "   " + styleMuted.Render("n") + styleSubtle.Render("  cancel"))
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colHot).
+		Padding(1, 2).
+		Width(w).
+		Render(strings.TrimRight(b.String(), "\n"))
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func colorizeDiff(text string, width int) string {
@@ -615,12 +724,18 @@ func truncatePath(p string, w int) string {
 	return "…" + string(r[len(r)-(w-1):])
 }
 
-func runTUI(generated string) error {
+func runTUI(generated string, ctx *prContext) (bool, error) {
 	commits := parseCommits(generated)
 	if len(commits) == 0 {
-		return fmt.Errorf("no commits parsed from generated output")
+		return false, fmt.Errorf("no commits parsed from generated output")
 	}
-	p := tea.NewProgram(newModel(commits), tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	p := tea.NewProgram(newModel(commits, ctx), tea.WithAltScreen())
+	final, err := p.Run()
+	if err != nil {
+		return false, err
+	}
+	if m, ok := final.(model); ok {
+		return m.applyRequested, nil
+	}
+	return false, nil
 }

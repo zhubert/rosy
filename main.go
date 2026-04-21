@@ -85,12 +85,24 @@ type prMeta struct {
 	Author       prAuthor   `json:"author"`
 	BaseRefName  string     `json:"baseRefName"`
 	HeadRefName  string     `json:"headRefName"`
+	BaseRefOid   string     `json:"baseRefOid"`
+	HeadRefOid   string     `json:"headRefOid"`
 	Labels       []prLabel  `json:"labels"`
 	Additions    int        `json:"additions"`
 	Deletions    int        `json:"deletions"`
 	ChangedFiles int        `json:"changedFiles"`
 	Files        []prFile   `json:"files"`
 	Commits      []prCommit `json:"commits"`
+}
+
+type prContext struct {
+	PRURL           string
+	RepoSlug        string
+	Branch          string
+	BaseSHA         string
+	HeadSHA         string
+	Violations      []string
+	DivergenceCount int
 }
 
 func main() {
@@ -132,7 +144,8 @@ func run(args []string) error {
 		}
 	}
 	if demo {
-		return runTUI(demoFixture)
+		_, err := runTUI(demoFixture, nil)
+		return err
 	}
 	if pr == "" {
 		printUsage()
@@ -178,12 +191,32 @@ func run(args []string) error {
 	t = startVerifying()
 	violations := verifyDiffParity(diff, resp)
 	t.end()
+	divCount := 0
 	if len(violations) > 0 {
-		statusParityFail(countLineDivergences(diff, resp))
+		divCount = countLineDivergences(diff, resp)
+		statusParityFail(divCount)
 	} else {
 		statusLGTM()
 	}
-	return runTUI(resp)
+
+	ctx := &prContext{
+		PRURL:           pr,
+		RepoSlug:        extractRepoSlug(pr),
+		Branch:          meta.HeadRefName,
+		BaseSHA:         meta.BaseRefOid,
+		HeadSHA:         meta.HeadRefOid,
+		Violations:      violations,
+		DivergenceCount: divCount,
+	}
+
+	applyReq, err := runTUI(resp, ctx)
+	if err != nil {
+		return err
+	}
+	if applyReq {
+		return applyRosy(ctx, parseCommits(resp))
+	}
+	return nil
 }
 
 // status prints a progress line to stderr in the rose palette.
@@ -450,7 +483,7 @@ func validatePRURL(s string) error {
 
 func fetchMeta(pr string) (*prMeta, error) {
 	cmd := exec.Command("gh", "pr", "view", pr,
-		"--json", "title,body,author,baseRefName,headRefName,labels,additions,deletions,changedFiles,files,commits")
+		"--json", "title,body,author,baseRefName,headRefName,baseRefOid,headRefOid,labels,additions,deletions,changedFiles,files,commits")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -658,4 +691,154 @@ func streamLines(text string, pending *strings.Builder, emit func(string)) {
 			pending.WriteRune(ch)
 		}
 	}
+}
+
+func extractRepoSlug(prURL string) string {
+	u, err := url.Parse(prURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 4)
+	if len(parts) >= 2 {
+		return parts[0] + "/" + parts[1]
+	}
+	return ""
+}
+
+func checkRepo(slug string) error {
+	out, err := exec.Command("git", "remote", "-v").Output()
+	if err != nil {
+		return errors.New("not in a git repository — cd into the repo first")
+	}
+	s := string(out)
+	for _, needle := range []string{
+		"github.com/" + slug + ".git",
+		"github.com/" + slug + " ",
+		"github.com/" + slug + "\t",
+		"github.com:" + slug + ".git",
+		"github.com:" + slug + " ",
+		"github.com:" + slug + "\t",
+	} {
+		if strings.Contains(s, needle) {
+			return nil
+		}
+	}
+	return fmt.Errorf("no remote points to github.com/%s — cd into the right repo first", slug)
+}
+
+func applyRosy(ctx *prContext, commits []parsedCommit) error {
+	out, err := exec.Command("git", "status", "--porcelain").Output()
+	if err != nil {
+		return errors.New("could not check working tree status")
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return errors.New("working tree is not clean — commit or stash changes first")
+	}
+
+	if err := checkRepo(ctx.RepoSlug); err != nil {
+		return err
+	}
+
+	status(fmt.Sprintf("checking out %s", ctx.Branch))
+	var coErr bytes.Buffer
+	coCmd := exec.Command("gh", "pr", "checkout", ctx.PRURL)
+	coCmd.Stderr = &coErr
+	if err := coCmd.Run(); err != nil {
+		msg := strings.TrimSpace(coErr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("gh pr checkout: %s", msg)
+	}
+
+	headOut, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		return fmt.Errorf("could not read HEAD: %w", err)
+	}
+	savedHead := strings.TrimSpace(string(headOut))
+	if savedHead != ctx.HeadSHA {
+		statusWarn(fmt.Sprintf("PR updated since rosy ran (%s → %s), verifying against new head", shortSHA(ctx.HeadSHA), shortSHA(savedHead)))
+		ctx.HeadSHA = savedHead
+	}
+
+	status(fmt.Sprintf("rewinding to %s", shortSHA(ctx.BaseSHA)))
+	if applyOut, err := exec.Command("git", "reset", "--hard", ctx.BaseSHA).CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset --hard: %s", strings.TrimSpace(string(applyOut)))
+	}
+
+	for i, c := range commits {
+		var patch strings.Builder
+		for _, f := range c.Files {
+			patch.WriteString(f.Diff)
+			if !strings.HasSuffix(f.Diff, "\n") {
+				patch.WriteString("\n")
+			}
+		}
+
+		tmp, err := os.CreateTemp("", "rosy-*.patch")
+		if err != nil {
+			exec.Command("git", "reset", "--hard", savedHead).Run() //nolint
+			return fmt.Errorf("could not create temp patch file: %w", err)
+		}
+		if _, err := tmp.WriteString(patch.String()); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			exec.Command("git", "reset", "--hard", savedHead).Run() //nolint
+			return fmt.Errorf("could not write patch: %w", err)
+		}
+		tmp.Close()
+
+		status(fmt.Sprintf("applying %d/%d  %s", i+1, len(commits), truncate(c.Subject, 48)))
+		applyCmd := exec.Command("git", "apply", "--3way", tmp.Name())
+		var applyErr bytes.Buffer
+		applyCmd.Stderr = &applyErr
+		if err := applyCmd.Run(); err != nil {
+			os.Remove(tmp.Name())
+			exec.Command("git", "reset", "--hard", savedHead).Run() //nolint
+			return fmt.Errorf("commit %d/%d %q failed to apply:\n%s",
+				i+1, len(commits), c.Subject, strings.TrimSpace(applyErr.String()))
+		}
+		os.Remove(tmp.Name())
+
+		msg := c.Subject
+		if c.Body != "" {
+			msg += "\n\n" + c.Body
+		}
+		args := []string{"commit", "-m", msg}
+		if c.Author != "" {
+			args = append(args, "--author", c.Author)
+		}
+		if c.Date != "" {
+			args = append(args, "--date", c.Date)
+		}
+		var commitErr bytes.Buffer
+		commitCmd := exec.Command("git", args...)
+		commitCmd.Stderr = &commitErr
+		if err := commitCmd.Run(); err != nil {
+			exec.Command("git", "reset", "--hard", savedHead).Run() //nolint
+			return fmt.Errorf("git commit for %q: %s", c.Subject, strings.TrimSpace(commitErr.String()))
+		}
+	}
+
+	status("verifying final tree")
+	diffOut, err := exec.Command("git", "diff", ctx.HeadSHA).Output()
+	if err != nil {
+		exec.Command("git", "reset", "--hard", savedHead).Run() //nolint
+		return fmt.Errorf("could not verify final tree: %w", err)
+	}
+	if strings.TrimSpace(string(diffOut)) != "" {
+		exec.Command("git", "reset", "--hard", savedHead).Run() //nolint
+		statusWarn("final tree differs from original head — original branch restored")
+		return errors.New("tree mismatch after apply — try again with --model opus")
+	}
+
+	status(fmt.Sprintf("applied %d commit%s to %s  ·  push when ready", len(commits), pluralS(len(commits)), ctx.Branch))
+	return nil
+}
+
+func shortSHA(s string) string {
+	if len(s) >= 7 {
+		return s[:7]
+	}
+	return s
 }
