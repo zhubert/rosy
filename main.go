@@ -870,6 +870,7 @@ func applyRosy(ctx *prContext, commits []parsedCommit) error {
 	}
 
 	status(fmt.Sprintf("applied %d commit%s to %s  ·  push when ready", len(commits), pluralS(len(commits)), ctx.Branch))
+	status(fmt.Sprintf("validate with: git diff %s", shortSHA(ctx.HeadSHA)))
 	return nil
 }
 
