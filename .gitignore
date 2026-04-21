@@ -1,0 +1,21 @@
+# Compiled binary (matches the module name)
+/rosy
+
+# Go build/test artifacts
+*.exe
+*.test
+*.out
+coverage.txt
+
+# goreleaser output
+/dist/
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp

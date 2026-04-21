@@ -1,0 +1,77 @@
+version: 2
+
+project_name: rosy
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: rosy
+    main: .
+    binary: rosy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: rosy
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+
+release:
+  github:
+    owner: zhubert
+    name: rosy
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: rosy
+    repository:
+      owner: zhubert
+      name: homebrew-tap
+      branch: main
+    directory: Formula
+    homepage: "https://github.com/zhubert/rosy"
+    description: "Rose-colored version of a GitHub PR, rendered via Claude"
+    license: "MIT"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "rosy {{ .Tag }}"
+    dependencies:
+      - name: gh
+    install: |
+      bin.install "rosy"
+    caveats: |
+      rosy shells out to `gh` and `claude`. Install the Claude Code CLI
+      separately (https://claude.com/claude-code) and make sure both
+      `gh` and `claude` are authenticated before running.
+    test: |
+      assert_match "usage: rosy", shell_output("#{bin}/rosy 2>&1", 1)
