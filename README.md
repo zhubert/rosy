@@ -1,9 +1,9 @@
 # rosy
 
-> *They say never rewrite history. They haven't seen my commit messages.*
+Paste in a GitHub PR, get back the commit history it deserved.
 
-`rosy` looks at a GitHub PR through rose-colored glasses and asks Claude 
-to redraft its commit history into what probably *should* have happened.
+`rosy` looks at a GitHub PR and asks Claude to redraft its commit history
+into what should have been there from the start.
 
 The output is just for display in a pretty TUI, not an actual git rewrite!
 That would be crazy...
