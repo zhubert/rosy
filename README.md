@@ -5,10 +5,10 @@ Paste in a GitHub PR, get back the commit history it deserved.
 `rosy` looks at a GitHub PR and asks Claude to redraft its commit history
 into what should have been there from the start.
 
-The output is just for display in a pretty TUI, not an actual git rewrite!
-That would be crazy...
+Step through the redrafted commits in a pretty TUI. If you actually want to
+rewrite history, press `i` — but that's probably crazy.
 
-*(Unless you press `i`.)*
+## No Really, Don't
 
 ![rosy TUI showing three panes: a commit list on the left and a syntax-highlighted diff on the right](docs/rosy.png)
 
