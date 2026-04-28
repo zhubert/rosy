@@ -232,22 +232,6 @@
   <div class="divider"></div>
 
   <div class="section">
-    <h2><span class="hash">#</span>No Really, Don't</h2>
-    <p>
-      Inside the TUI, <code>i</code> will attempt to actually apply the
-      fabricated history to your local branch. A two-stage confirmation
-      stands between you and regret. The first screen asks
-      <em>"are you crazy?"</em> It's not rhetorical.
-    </p>
-    <p>
-      <code>rosy</code> will never force push. It will, however,
-      <code>git reset --hard</code>. You've been warned with love.
-    </p>
-  </div>
-
-  <div class="divider"></div>
-
-  <div class="section">
     <h2><span class="hash">#</span>Install</h2>
     <div class="install-grid">
       <div class="install-option">
@@ -282,23 +266,6 @@ rosy: <span style="color:var(--subtle)">LGTM</span></span></div>
     <div class="tui-figure">
       <img src="rosy.png" alt="rosy TUI showing three panes: a commit list on the left and a syntax-highlighted diff on the right">
     </div>
-  </div>
-
-  <div class="divider"></div>
-
-  <div class="section">
-    <h2><span class="hash">#</span>On the occasional embellishment</h2>
-    <p>
-      The reconstruction is line-for-line faithful by contract: every added
-      line in the PR must appear exactly once across the fabricated commits,
-      same for removed lines. A deterministic post-check enforces this.
-    </p>
-    <p>
-      When the muse drifts — duplicating a hunk across two commits, or
-      inventing a stray line of its own — <code>rosy</code> flags the
-      divergence in crimson and opens the TUI anyway. This is a fun project,
-      not a court record. Trust the diffs; treat the prose as a suggestion.
-    </p>
   </div>
 
   <footer>
